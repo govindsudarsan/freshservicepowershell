@@ -1,0 +1,51 @@
+# Import various functions used to query warranty data with Dell
+# Module available here: https://gallery.technet.microsoft.com/scriptcenter/Get-DellWarranty-function-fc95bd4d
+Import-Module DellUtils
+
+# Available at: https://domain.freshservice.com/cmdb/ci_types.json
+$laptop_category_id = "yyyy" //change it based on Account
+
+# Build the header to authenticate to FreshService
+$api_key = "x" //change it based on Account
+$bytes = [System.Text.Encoding]::ASCII.GetBytes($api_key)
+$base64 = [System.Convert]::ToBase64String($bytes)
+$headers = @{"Authorization" = "Basic $base64"}
+
+$has_content = $true	# Boolean to indicate if a response has content
+$page_number = 1	# Need to paginate through assets. Start at page one.
+
+$assets = @()		# Will hold all assets returned from content
+
+# While the response has content
+while ($has_content)
+{
+	# Get the response
+	$response = Invoke-WebRequest -Uri "https://domain.freshservice.com/cmdb/items.json?page=$($page_number)" -Header $headers
+
+	# Check the content. Convert the content to objects and add them to the assets list if content exists and prepare to check the next asset page, else break the loop.
+	if ($response.Content -ne "[]")
+	{
+		$assets += ($response.Content | ConvertFrom-JSON)
+		$page_number += 1
+	}
+	else
+	{
+		$has_content = $false
+	}
+}
+
+# Just use laptops for now
+$laptop_assets = ($assets | where { $_.ci_type_id -eq $laptop_category_id })
+
+# Update the warranty information of each laptop in FreshService
+foreach ($laptop in $laptop_assets)
+{
+	$warranty_info = Get-DellWarranty -ServiceTag $laptop.levelfield_values.serial_number_xxxx
+	$warranty_info.EndDate = Get-Date $warranty_info.EndDate -Format "yyyy-MM-ddTHH:mm:ss+10:00"
+	$warranty_info.StartDate = Get-Date $warranty_info.StartDate -Format "yyyy-MM-ddTHH:mm:ss+10:00"
+	$warranty_info.ShipDate = Get-Date $warranty_info.ShipDate -Format "yyyy-MM-ddTHH:mm:ss+10:00"
+
+  $request = "{ ""cmdb_config_item"": { ""name"": ""$($laptop.name)"", ""levelfield_values"": { ""warranty_expiry_date_xxxx"": ""$($warranty_info.EndDate)"", ""warranty_service_levels_xxxx"": ""$($warranty_info.ServiceLevel)"" } } }"
+	
+  $response = Invoke-WebRequest -Uri https://domain.freshservice.com/cmdb/items/$($laptop.display_id).json -Header $headers -Method Put -Body $request -ContentType "application/json"
+}
